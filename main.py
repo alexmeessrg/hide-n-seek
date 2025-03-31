@@ -25,6 +25,7 @@ import gymnasium as gym
 from gymnasium import spaces
 from stable_baselines3 import PPO
 from stable_baselines3.common.buffers import ReplayBuffer
+from stable_baselines3.common.vec_env import DummyVecEnv
 import numpy as np
 import torch
 import torch.nn as nn
@@ -141,83 +142,65 @@ class CustomRLAgentEnv(gym.Env):
         self.action_space = spaces.Box(low=-np.pi, high=np.pi, shape=(1,), dtype=np.float32)  # direction_taken (-1 to 1) => can transform into degrees later
 
         # Define observation space
-        self.observation_space = spaces.Box(low=np.array([-np.inf, -np.inf, 0, 0, 0, 0, -np.inf]),  # lower bounds
-                                            high=np.array([np.inf, np.inf, np.inf, 1, 1, 1, np.inf]),  # upper bounds
+        self.observation_space = spaces.Box(low=np.array([0, 0, -np.pi, 0, 0, 0, 0]),  # lower bounds
+                                            high=np.array([np.inf, np.inf, np.pi, np.inf, 1, 1, 1]),  # upper bounds
                                             dtype=np.float32)
 
-        # Initial state variables (you would initialize this based on your environment)
-        self.state = np.zeros(7, dtype=np.float32)  # Placeholder state
+        # State is: position X, position Y, relative_angle in RADIANS, distance, float(view_blocked), float(hit_obstacle), float(is_within_vision_cone)
+        
+        # Initial state variables
+        self.state = np.array([50, 50, 0, 100, 1, 0, 0], dtype=np.float32)
         self.done = False
     
-    def step(self, action):
-        #takes an action and returns the next state, reward, termination, info(optional), truncated?
-        observation = None #the next state after takin the action
-        reward = 0 #the reward for taking the action
-        terminated = False #episode has ended (I don't think this simulation ends ever)
-        truncated = None
-        info = None #optional additional information
+    def step(self, action: float, unit:Unit, player:Unit, obstacles:List[Tuple[float,float,float,float]]):
 
-        return observation, reward, terminated, info    
+        #action is the direction of movement in terms of an angle in radians. First decompose into a vector
+        dir_x, dir_y = math.cos(action), math.sin(action)
+        
+        #Try to move towards this direction. The only situations it will be blocked are: run into a wall, run into a boundary
+        #Determining the target position
+        pos_x, pos_y = unit.position.X + dir_x * AI_SPEED, unit.position.Y + dir_y * AI_SPEED
+        
+        #Now check if inside any of the obstacles or outside boundaries.
+        outside_boundary = (0 > pos_x > HEIGHT or 0 > pos_y > WIDTH)
+        blocked_by_obstacle = Simulation.check_all_point_in_rectangles((pos_x,pos_y),obstacles)
+        
+        #If any of these two are positive the position isn't viable.
+        if (outside_boundary or blocked_by_obstacle):
+                relative_angle_DEGREES = (Simulation.angle_between_vectors(unit.position, player.position))
+                distance = Simulation.calculate_distance(unit.position, player.position)
+                is_view_blocked = Simulation.does_line_intersect_any_rectangle(unit.position,player.position, obstacles)
+                is_boundary_blocked = True
+                is_within_cone_range, is_within_cone_angle = Simulation.is_in_vision_cone(player.position, player.direction, unit.position)
+                is_within_cone = (is_within_cone_range and is_within_cone_angle)
+
+                next_state = np.array(unit.position[0], unit.position[1], np.deg2rad(relative_angle_DEGREES), distance, float(is_view_blocked), float(is_boundary_blocked), float(is_within_cone))
+                reward = Simulation.calculate_reward(relative_angle_DEGREES, distance, is_view_blocked, is_within_cone, is_boundary_blocked)
+                done = False
+                info = {"blocked by boundary"}
+
+        else: #if free to move, go there AND FACE THE CONSEQUENCES OF YOUR ACTIONS!
+                relative_angle_DEGREES = (Simulation.angle_between_vectors((pos_x,pos_y), player.position))
+                distance = Simulation.calculate_distance((pos_x,pos_y), player.position)
+                is_view_blocked = Simulation.does_line_intersect_any_rectangle((pos_x,pos_y), player.position, obstacles)
+                is_boundary_blocked = False
+                is_within_cone_range, is_within_cone_angle = Simulation.is_in_vision_cone(player.position, player.direction, unit.position)
+                is_within_cone = (is_within_cone_range and is_within_cone_angle)
+
+                next_state = np.array(pos_x, pos_y, np.deg2rad(relative_angle_DEGREES), distance, float(is_view_blocked), float(is_boundary_blocked), float(is_within_cone))
+
+        return next_state, reward, done, info
     
-    def render(self): #rendering is done outside of this class, so it doesn't matter
+    def render(self): 
+        #rendering is done outside of this class in a pygame process, so it doesn't matter here
         pass  
     
-    def reset(self): #doesn't really matter now, because I never reset the simulation
-        self.state = np.zeros(7, dtype=np.float32)  # Placeholder state
+    def reset(self):
+        self.state = np.array([50, 50, 0, 100, 1, 0, 0], dtype=np.float32)
         self.done = False
 
-    #def close(self): #needs to be called to free-resouces
-    #    pass
-
-   
-
-    
-    def render(self, mode="Human"):
-        pass
-
-    def get_state(self):
-        return np.random.rand(7).astype(np.float32)  # Replace with actual logic
-
-    @staticmethod
-    def calculate_reward(angle_relative_to_player, distance_to_player, is_view_blocked_by_obstacle,is_within_vision_cone,hit_obstacle ) -> int:
-        positioning_reward = max(WEIGHT_MAX_PER_ANGLE - abs(angle_relative_to_player), 0)
-        
-        if distance_to_player <= DISTANCE_NEAR:
-            distance_reward = min(WEIGHT_MAX_PER_DISTANCE, max(0,WEIGHT_MAX_PER_DISTANCE-(distance_to_player)/10))
-        elif distance_to_player >= DISTANCE_FAR:
-            distance_reward = WEIGHT_MAX_PER_FAR_DISTANCE
-        else:
-            distance_reward = 0
-        
-        if (is_view_blocked_by_obstacle):
-            blocked_reward = WEIGHT_BLOCKED_VIEW
-        else:
-            blocked_reward = 0
-        
-        if (is_within_vision_cone):
-            vision_cone_reward = WEIGHT_VISION_CONE_HIT
-        else:
-            vision_cone_reward = 0
-        
-        if (hit_obstacle):
-            hit_obstacle_reward = WEIGHT_OBSTACLE_HIT
-        else:
-            hit_obstacle_reward = 0
-
-        return positioning_reward + distance_reward + blocked_reward + vision_cone_reward + hit_obstacle_reward
-"""
-class PPO(nn.Module):
-    def __init__(self, state_dim, action_dim):
-        super(PPO, self).__init__()
-        self.fc1 = nn.Linear(state_dim, 64)
-        self.fc2 = nn.Linear(64, 64)
-        self.fc3 = nn.Linear(64, action_dim)
-
-    def forward(self, state):
-        x = torch.relu(self.fc1(state))
-        x = torch.relu(self.fc2(x))
-        return self.fc3(x)
-"""
+    def close(self): #needs to be called to free-resouces
+       pass
 
 class Simulation():
     def __init__(self):
@@ -239,7 +222,7 @@ class Simulation():
         self.abs_rects: List[Tuple[float,float,float,float]] = []
         for obstacles in OBSTACLES:
             self.abs_rects.append(
-                self.convert_relative_rect_to_absol_rect(
+                self.__convert_relative_rect_to_absol_rect(
                     (obstacles[0],obstacles[1],obstacles[2],obstacles[3])
                 ))
             
@@ -268,27 +251,24 @@ class Simulation():
             if (self.iteration_index > OFFLINE_LEARNING_STEPS and self.offline_training_state == True):
                 self.offline_training_state = False
                
-                # initialize the environment, model
-                self.env = CustomRLAgentEnv() #the environment setup, includes the state, action and rewards
-                self.ppo_model = PPO("MlpPolicy", env=self.env, verbose=1) #initializing the mode
-                self.ppo_model.learn(total_timesteps=10000)
+                # initialize the environment, model (do once)
+                # using DummyVecEnv because the simulation runs on single thread. For other applications it might be better to use SubprocVecEnv
+                self.envs = DummyVecEnv([lambda:CustomRLAgentEnv() for _ in range(ENEMY_TEAM_SIZE)]) #so I can store the AI states separetedly
                 
+                self.ppo_model = PPO("MlpPolicy", env=self.envs, verbose=1) #initializing the mode
+                
+
+                # self.ppo_model.learn(total_timesteps=10000)
                 #self.ppo_model.save("ppo_hideNseek")
                 #del ppo_model
                 #self.ppo_model.load("ppo_hideNseek")
-
-                self.obs = self.env.reset()
-
-                
-
-
-        
+       
             # move player to next waypoint index, pass to next waypoint if near end of waypoint
             self.player.position, Move_direction = self.move_to_point(self.player.position, WAYPOINTS[(self.waypoint_index + 1) % len(WAYPOINTS)], PLAYER_SPEED)
             if (self.calculate_distance(self.player.position,WAYPOINTS[(self.waypoint_index + 1) % len(WAYPOINTS)]) <= WAYPOINT_ACCEPTABLE_DISTANCE):
                 self.waypoint_index = (self.waypoint_index + 1) % len(WAYPOINTS)
             
-            AI_direction, is_AI_close = self.rotate_player_towards_ai(self.player.position, self.AI_team, PLAYER_ROTATION_RATE, self.player.direction)
+            AI_direction, is_AI_close = self.__rotate_player_towards_ai(self.player.position, self.AI_team, PLAYER_ROTATION_RATE, self.player.direction)
             # determine if you use the movement direction or turn to AI direction
             if (is_AI_close):
                 self.player.direction = AI_direction
@@ -296,12 +276,24 @@ class Simulation():
                 self.player.direction = Move_direction
 
             #move AI, check for collisions, check for damaging player, check for being damage by the player
-            for unit in self.AI_team:
+            for unitAI in self.AI_team:
                 if self.offline_training_state:
-                    unit.position, unit.direction = self.move_AI_towards_player(unit, self.player, self.abs_rects)
+                    unitAI.position, unitAI.direction = self.move_AI_towards_player(unitAI, self.player, self.abs_rects)
                 else:
-                    unit.position, unit.direction = self.move_AI_towards_player(unit, self.player, self.abs_rects)
-                    self.ppo_model.learn(total_timesteps=50000)
+                    unitAI.position, unitAI.direction = self.move_AI_towards_player(unitAI, self.player, self.abs_rects)
+                    
+                    obs = self.env.reset()
+
+                    direction_angle = self.ppo_model.predict(obs) #the output of the model
+
+                    next_state, reward, done, info = self.move_AI_towards_direction()
+
+                    #actor.model.buffer.add(obs, action, reward, next_state, done)
+                    #obs = next_state
+
+                    if (self.iteration_index % 100) == 0: #only run learning after 100 steps (since all AI is added together, steps need to be multiplied by team size)
+                        self.ppo_model.learn(total_timesteps=100 * ENEMY_TEAM_SIZE)
+            
                     
 
 
@@ -337,6 +329,46 @@ class Simulation():
         
         pygame.quit()
 
+    @staticmethod
+    def calculate_reward(angle_relative_to_player:float, distance_to_player:float, is_view_blocked_by_obstacle:bool,is_within_vision_cone:bool,hit_obstacle:bool ) -> int:
+        """Calculate the reward base on arguments
+
+        Arguments:
+        angle_relative_to_player [float] = angle in degrees between unit and player
+        distance_to_player: [float]
+        is_view_blocked_by_obstacle: [bool]
+        is_within_vision_cone: [bool]
+        hit_obstacle: [bool]
+
+        Returns:
+        Reward [int]
+        """
+        positioning_reward = max(WEIGHT_MAX_PER_ANGLE - abs(angle_relative_to_player), 0)
+        
+        if distance_to_player <= DISTANCE_NEAR:
+            distance_reward = min(WEIGHT_MAX_PER_DISTANCE, max(0,WEIGHT_MAX_PER_DISTANCE-(distance_to_player)/10))
+        elif distance_to_player >= DISTANCE_FAR:
+            distance_reward = WEIGHT_MAX_PER_FAR_DISTANCE
+        else:
+            distance_reward = 0
+        
+        if (is_view_blocked_by_obstacle):
+            blocked_reward = WEIGHT_BLOCKED_VIEW
+        else:
+            blocked_reward = 0
+        
+        if (is_within_vision_cone):
+            vision_cone_reward = WEIGHT_VISION_CONE_HIT
+        else:
+            vision_cone_reward = 0
+        
+        if (hit_obstacle):
+            hit_obstacle_reward = WEIGHT_OBSTACLE_HIT
+        else:
+            hit_obstacle_reward = 0
+
+        return positioning_reward + distance_reward + blocked_reward + vision_cone_reward + hit_obstacle_reward
+    
     def add_action_result_to_memory(self, position: Tuple[float,float], relative_angle: float, distance: float, view_blocked: bool, hit_obstacle: bool, is_within_vision_cone:bool, direction: float):
         
         new_state = [position[0],position[1], relative_angle, distance, float(view_blocked), float(hit_obstacle), float(is_within_vision_cone)]
@@ -354,15 +386,15 @@ class Simulation():
         self.player_health = PLAYER_MAX_HEALTH
 
     @staticmethod
-    def vector_to_angle_rad(Direction: Tuple[float, float])->float:
+    def __vector_to_angle_rad(Direction: Tuple[float, float])->float:
         return math.atan2(Direction[1], Direction[0])
     
     @staticmethod
-    def angle_rad_to_vector(Angle: float) -> Tuple[float, float]:
+    def __angle_rad_to_vector(Angle: float) -> Tuple[float, float]:
         return math.cos(Angle), math.sin(Angle)
     
     @staticmethod 
-    def points_to_angle_rad(origin: Tuple[float,float], target: Tuple[float,float])-> float:
+    def __points_to_angle_rad(origin: Tuple[float,float], target: Tuple[float,float])-> float:
         return math.atan2(target[1]-origin[1], target[0]-origin[0])
             
     @staticmethod
@@ -373,10 +405,10 @@ class Simulation():
     @staticmethod
     def check_is_within_sector_angle(pos1:Tuple[float,float], pos2:Tuple[float,float], direction:Tuple[float, float]) -> bool: #outside cone sector
         dist = Simulation.calculate_distance(pos1, pos2)
-        angle = Simulation.vector_to_angle_rad(direction)
+        angle = Simulation.__vector_to_angle_rad(direction)
 
         if dist > 0:
-            target_angle = Simulation.points_to_angle_rad(pos1, pos2)
+            target_angle = Simulation.__points_to_angle_rad(pos1, pos2)
             delta_angle = abs(angle - target_angle)
             delta_angle = (delta_angle + math.pi) % (2 * math.pi) - math.pi #-pi to pi normalization
             return (delta_angle <= math.radians(VISION_CONE_ANGLE/2))
@@ -401,7 +433,7 @@ class Simulation():
         return ((posX, posY), (dirX, dirY))
     
     @staticmethod
-    def rotate_player_towards_ai(player_pos: Tuple[float, float], ai_team: List[Unit], rotation_rate: float, player_direction: Tuple[float, float]) -> Tuple[Tuple[float, float], bool]:
+    def __rotate_player_towards_ai(player_pos: Tuple[float, float], ai_team: List[Unit], rotation_rate: float, player_direction: Tuple[float, float]) -> Tuple[Tuple[float, float], bool]:
     #Rotate the player to always face the closest AI, with max rotation rate.
         closest_ai = None
         closest_distance = float('inf')
@@ -464,12 +496,12 @@ class Simulation():
     
     
     @staticmethod
-    def convert_relative_rect_to_absol_rect(rect: Tuple[float, float, float, float]) -> Tuple[float, float, float, float]:
+    def __convert_relative_rect_to_absol_rect(rect: Tuple[float, float, float, float]) -> Tuple[float, float, float, float]:
         x, y, width, height = rect
         return x, y, x+width, y+height
     
     @staticmethod
-    def is_point_inside_rectangle(point: Tuple[float,float], rect: Tuple[float, float, float, float]) -> bool:
+    def __is_point_inside_rectangle(point: Tuple[float,float], rect: Tuple[float, float, float, float]) -> bool:
         x, y = point
         rx_min, ry_min, rx_max, ry_max = rect #rectangle must have being converted to absolute before hand
         return rx_min <= x <= rx_max and ry_min <= y <= ry_max
@@ -477,10 +509,14 @@ class Simulation():
     @staticmethod
     def check_all_point_in_rectangles(point: Tuple, obstacles: List[Tuple[float, float, float, float]])-> bool:
         for obstacle in obstacles:
-            if Simulation.is_point_inside_rectangle(point, obstacle):
+            if Simulation.__is_point_inside_rectangle(point, obstacle):
                 return True
                 break
         return False
+    
+    
+    def move_AI_towards_direction(self):
+        pass
     
     
     def move_AI_towards_player(self, unit:Unit, player:Unit, obstacles:List[Tuple[float,float,float,float]])-> Tuple[Tuple[float,float], Tuple[float,float]]:
@@ -505,7 +541,7 @@ class Simulation():
             try_position, try_direction = Simulation.move_to_point(unit.position, try_position, AI_SPEED) #####<<ERRO AQUI
 
         if (Simulation.check_all_point_in_rectangles(try_position,obstacles)):
-            inverted = Simulation.invert_and_deviate(unit.direction, 45) #try to go in opposite direction with some randomization
+            inverted = Simulation.__invert_and_deviate(unit.direction, 45) #try to go in opposite direction with some randomization
             try_position = (unit.position[0] + inverted[0] * AI_SPEED * 100.0, unit.position[1] + inverted[1] * AI_SPEED * 100.0)
             try_position, try_direction = Simulation.move_to_point(unit.position, try_position, AI_SPEED)
             
@@ -532,7 +568,7 @@ class Simulation():
         
 
     @staticmethod
-    def invert_and_deviate(direction:Tuple[float,float], max_deviation:float) -> Tuple[float, float]:
+    def __invert_and_deviate(direction:Tuple[float,float], max_deviation:float) -> Tuple[float, float]:
     # Convert degrees to radians
         deviation = math.radians(max_deviation)
         deviation = random.uniform(-max_deviation,max_deviation)
@@ -573,8 +609,8 @@ class Simulation():
         x, y = v
         return (-y, x)
 
-       
-    def line_intersects_line(p1: Tuple[float,float], p2: Tuple[float,float], q1: Tuple[float,float], q2: Tuple[float,float]):
+    @staticmethod
+    def __line_intersects_line(p1: Tuple[float,float], p2: Tuple[float,float], q1: Tuple[float,float], q2: Tuple[float,float]):
         """Check if line segment (p1-p2) intersects with (q1-q2) using cross products."""
         
         def cross_product(v1, v2):
@@ -597,7 +633,8 @@ class Simulation():
 
         return 0 <= t <= 1 and 0 <= u <= 1  # True if intersection is within both segments
 
-    def line_intersects_rectangle(p1:Tuple[float,float], p2:Tuple[float,float], rect: Tuple[float, float, float, float]):
+    @staticmethod
+    def __line_intersects_rectangle(p1:Tuple[float,float], p2:Tuple[float,float], rect: Tuple[float, float, float, float]):
         """Check if a line segment (p1-p2) intersects any edge of the rectangle."""
         
         x_min, y_min, x_max, y_max = rect
@@ -610,7 +647,7 @@ class Simulation():
         ]
 
         for edge in edges:
-            if Simulation.line_intersects_line(p1, p2, edge[0], edge[1]):
+            if Simulation.__line_intersects_line(p1, p2, edge[0], edge[1]):
                 return True  # Early exit if any intersection is found
 
         return False
@@ -619,7 +656,7 @@ class Simulation():
     def does_line_intersect_any_rectangle(p1, p2, rectangles: List[Tuple[float, float, float, float]]) -> bool:
         """Check if a line segment (p1-p2) intersects any rectangle in the list."""
         for rect in rectangles:
-            if Simulation.line_intersects_rectangle(p1, p2, rect):
+            if Simulation.__line_intersects_rectangle(p1, p2, rect):
                 return True
         return False
     
