@@ -3,6 +3,9 @@
 A reinforced learning algorithm (PPO) for game AI with chase and avoid behavior. Uses Stable Diffusion 3 and PyGame (for displaying results).
 "Player" moves on a pre-determined path and AI tries to get as close as it can. Player rotates toward nearby AI as to simulate actual player awareness of danger.
 
+![application image](media/Hide-n-Seek.png)
+
+
 ## Awarded Behavior: ##
 * Get as close as possible to target.
 * Get out of view of field of player.
