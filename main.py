@@ -2,8 +2,14 @@
 A machine learning algorithm to train for a Hide and Seek game.
 
 
-Basic Flow:
-* Create team of enemies and player.
+Script Name: main.py
+Description: A machine learning algorithm to train for a Hide and Seek game.
+Author: Alex Mees
+Date: 29-03-25
+Version: 0.1
+Dependencies: PyGame (just for display), Gymnasium, Stable Baselines, Torch
+Usage:
+* Create [team of enemies] a enemy and a player.
 * Create play area (size and obstacles).
 * Move enemies to maximize objectives (hit player without being hit).
 * Store data and use reinforced-learning.
